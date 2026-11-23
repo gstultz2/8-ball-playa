@@ -2,11 +2,13 @@ import argparse
 
 import pooltool as pt
 
+from always_make import AlwaysMake
 from pool_simulator import GhostSimulator, GameResult
 from random_pool import RandomPlayer
 
 
 GAME_TYPES = {"8-ball": pt.GameType.EIGHTBALL, "9-ball": pt.GameType.NINEBALL}
+PLAYERS = {"random": RandomPlayer, "always-make": AlwaysMake}
 
 def printGameResults(game: GameResult) -> None:
     print(f"{game.game_type} against the ghost")
@@ -28,9 +30,19 @@ def printGameResults(game: GameResult) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--game", choices=GAME_TYPES, default="9-ball")
+    parser.add_argument("--player", choices=PLAYERS, default="random")
+    parser.add_argument(
+        "--visualize", action="store_true", help="Replay the rack in Pooltool's shot viewer"
+    )
     args = parser.parse_args()
 
-    printGameResults(GhostSimulator(GAME_TYPES[args.game]).run(RandomPlayer()))
+    game = GhostSimulator(GAME_TYPES[args.game]).run(PLAYERS[args.player]())
+
+    printGameResults(game)
+    if args.visualize:
+        shots = pt.MultiSystem()
+        shots.extend([played.table for played in game.shots])
+        pt.show(shots, title="N for next shot, P for previous, Esc to close")
 
 
 if __name__ == "__main__":
