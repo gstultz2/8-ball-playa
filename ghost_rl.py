@@ -2,8 +2,9 @@
 
 import argparse
 from collections import deque
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass, field, replace
+import json
 import math
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -33,6 +34,8 @@ SPEED_ERROR_FRACTION = 0.08
 FEATURE_COUNT = 3 * len(BALL_IDS) + 8 + len(POCKET_IDS) + len(POCKET_OFFSETS) + len(POWERS)
 HIDDEN_SIZE = 48
 BATCH_SIZE = 32
+EXPLORATION_RACKS = 1500
+CHECKPOINT_INTERVAL = 500
 
 
 @dataclass(frozen=True)
@@ -196,60 +199,164 @@ def bellman_target(transition: Transition, network: QNetwork, target: QNetwork) 
     return float(target.values(transition.next_features[index:index + 1])[0])
 
 
-def train(layout: str, episodes: int, seed: int) -> QNetwork:
-    rng, noise_rng = (np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(2))
-    network = QNetwork(rng)
-    target = QNetwork(rng)
-    target.weights = tuple(weights.copy() for weights in network.weights)
-    experience: deque[Transition] = deque(maxlen=5000)
-    recent_wins: deque[bool] = deque(maxlen=100)
-    steps = 0
+@dataclass
+class TrainingState:
+    layout: str
+    rng: np.random.Generator
+    noise_rng: np.random.Generator
+    network: QNetwork
+    target: QNetwork
+    experience: deque[Transition] = field(default_factory=lambda: deque(maxlen=5000))
+    recent_wins: deque[bool] = field(default_factory=lambda: deque(maxlen=100))
+    episodes: int = 0
+    steps: int = 0
 
-    for episode in range(1, episodes + 1):
-        epsilon = float(np.interp(episode - 1, (0, max(1, episodes * 0.75)), (0.9, 0.1)))
+    @classmethod
+    def start(cls, layout: str, seed: int) -> "TrainingState":
+        rng, noise_rng = (np.random.default_rng(s) for s in np.random.SeedSequence(seed).spawn(2))
+        network = QNetwork(rng)
+        target = QNetwork(rng)
+        target.weights = tuple(weights.copy() for weights in network.weights)
+        return cls(layout, rng, noise_rng, network, target)
+
+
+def read_weights(
+    archive: Mapping[str, np.ndarray], network: QNetwork, prefix: str = "arr"
+) -> None:
+    weights = tuple(archive[f"{prefix}_{index}"] for index in range(len(network.weights)))
+    if any(saved.shape != current.shape for saved, current in zip(weights, network.weights)):
+        raise ValueError("Checkpoint weights do not match the current Q-network")
+    network.weights = weights
+
+
+def load_training_state(path: Path, layout: str | None, seed: int) -> TrainingState:
+    with np.load(path, allow_pickle=False) as archive:
+        saved_layout = str(archive["layout"])
+        if saved_layout not in LAYOUTS:
+            raise ValueError(f"Unknown checkpoint layout {saved_layout!r}")
+        if layout is not None and layout != saved_layout:
+            raise ValueError(
+                f"Checkpoint uses {saved_layout!r}. Use a different checkpoint for {layout!r}."
+            )
+        state = TrainingState.start(saved_layout, seed)
+        read_weights(archive, state.network)
+        if "training" not in archive:
+            state.target.weights = tuple(weights.copy() for weights in state.network.weights)
+            print(f"Loaded weights from {path} | starting a new replay buffer", flush=True)
+            return state
+
+        metadata = json.loads(str(archive["training"]))
+        state.episodes = metadata["episodes"]
+        state.steps = metadata["steps"]
+        state.rng.bit_generator.state = metadata["rng"]
+        state.noise_rng.bit_generator.state = metadata["noise_rng"]
+        state.recent_wins.extend(metadata["recent_wins"])
+        read_weights(archive, state.target, "target")
+
+        next_features = archive["next_features"]
+        start = 0
+        for features, outcome, size in zip(
+            archive["features"], archive["outcomes"], archive["next_sizes"], strict=True
+        ):
+            end = start + int(size)
+            following = next_features[start:end] if size else None
+            state.experience.append(Transition(features, Outcome(outcome), following))
+            start = end
+    print(f"Resumed from {path} after {state.episodes} completed racks", flush=True)
+    return state
+
+
+def save_training_state(path: Path, state: TrainingState) -> None:
+    metadata = json.dumps({
+        "episodes": state.episodes,
+        "steps": state.steps,
+        "rng": state.rng.bit_generator.state,
+        "noise_rng": state.noise_rng.bit_generator.state,
+        "recent_wins": list(state.recent_wins),
+    })
+    next_rows = [
+        sample.next_features for sample in state.experience if sample.next_features is not None
+    ]
+    next_sizes = [
+        0 if sample.next_features is None else len(sample.next_features)
+        for sample in state.experience
+    ]
+    features = np.asarray([sample.features for sample in state.experience], dtype=np.float32)
+    next_features = np.concatenate(next_rows) if next_rows else np.empty((0, FEATURE_COUNT), dtype=np.float32)
+    target_weights = {f"target_{index}": weights for index, weights in enumerate(state.target.weights)}
+
+    checkpoint = NamedTemporaryFile(dir=path.parent, delete=False)
+    temporary_path = Path(checkpoint.name)
+    try:
+        with checkpoint:
+            np.savez(
+                checkpoint, *state.network.weights, layout=state.layout, training=metadata,
+                features=features.reshape(-1, FEATURE_COUNT),
+                outcomes=np.array([sample.outcome.value for sample in state.experience], dtype="U8"),
+                next_features=next_features, next_sizes=np.asarray(next_sizes, dtype=np.int32),
+                **target_weights,
+            )
+        temporary_path.replace(path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    print(f"Saved checkpoint after {state.episodes} racks to {path}", flush=True)
+
+
+def train(
+    layout: str | None, episodes: int, seed: int, *,
+    checkpoint: Path | None = None, save_every: int = CHECKPOINT_INTERVAL,
+) -> QNetwork:
+    if checkpoint is not None and checkpoint.exists():
+        state = load_training_state(checkpoint, layout, seed)
+    else:
+        state = TrainingState.start(layout or "side-pocket", seed)
+    total = state.episodes + episodes
+    rng, network, target = state.rng, state.network, state.target
+    experience, recent_wins = state.experience, state.recent_wins
+
+    for episode in range(state.episodes + 1, total + 1):
+        epsilon = np.interp(episode - 1, (0, EXPLORATION_RACKS), (0.9, 0.1))
 
         def choose(features: np.ndarray) -> int:
             if rng.random() < epsilon:
                 return int(rng.integers(len(features)))
             return network.choose(features)
 
-        for step in play_episode(layout, noise_rng, choose):
+        for step in play_episode(state.layout, state.noise_rng, choose):
             experience.append(step.transition)
-            steps += 1
+            state.steps += 1
             if len(experience) >= BATCH_SIZE:
                 batch = [experience[i] for i in rng.integers(len(experience), size=BATCH_SIZE)]
                 features = np.stack([sample.features for sample in batch])
                 targets = np.array([bellman_target(sample, network, target) for sample in batch])
                 network.update(features, targets)
-            if steps % 100 == 0:
+            if state.steps % 100 == 0:
                 target.weights = tuple(weights.copy() for weights in network.weights)
             if step.transition.outcome is not Outcome.CONTINUE:
                 recent_wins.append(step.transition.outcome is Outcome.PLAYER_WINS)
 
-        if episode % 100 == 0 or episode == episodes:
-            print(f"Rack {episode}/{episodes} | recent wins {sum(recent_wins)}/{len(recent_wins)}",
+        state.episodes = episode
+        if episode % 100 == 0 or episode == total:
+            print(f"Rack {episode}/{total} | recent wins {sum(recent_wins)}/{len(recent_wins)}",
                   flush=True)
+        if checkpoint is not None and (episode % save_every == 0 or episode == total):
+            save_training_state(checkpoint, state)
     return network
 
 
 def train_command(args: argparse.Namespace) -> None:
-    network = train(args.layout, args.episodes, args.seed)
-    checkpoint = NamedTemporaryFile(dir=args.checkpoint.parent, delete=False)
-    temporary_path = Path(checkpoint.name)
     try:
-        with checkpoint:
-            np.savez(checkpoint, *network.weights, layout=args.layout)
-        temporary_path.replace(args.checkpoint)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    print(f"Saved policy to {args.checkpoint}")
+        train(args.layout, args.episodes, args.seed,
+              checkpoint=args.checkpoint, save_every=args.save_every)
+    except KeyboardInterrupt:
+        raise SystemExit("Training interrupted. Run the same command to continue from the latest save.") from None
 
 
 def replay_command(args: argparse.Namespace) -> None:
-    with np.load(args.checkpoint) as checkpoint:
+    with np.load(args.checkpoint, allow_pickle=False) as checkpoint:
         layout = str(checkpoint["layout"])
         network = QNetwork(np.random.default_rng(0))
-        network.weights = tuple(checkpoint[f"arr_{i}"] for i in range(len(network.weights)))
+        read_weights(checkpoint, network)
     seeds = np.random.SeedSequence(args.seed).spawn(args.trials)
     visual_shots = pt.MultiSystem() if args.visualize else None
     for trial, seed in enumerate(seeds, start=1):
@@ -295,10 +402,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(required=True)
     trainer = commands.add_parser("train", help="learn from noisy racks")
-    trainer.add_argument("--layout", choices=LAYOUTS, default="side-pocket")
-    trainer.add_argument("--episodes", type=positive_int, default=2000)
-    trainer.add_argument("--seed", type=int, default=0)
-    trainer.add_argument("--checkpoint", type=Path, default=Path("ghost_q.npz"))
+    trainer.add_argument("--layout", choices=LAYOUTS, help="starting layout for a new checkpoint")
+    trainer.add_argument("--episodes", type=positive_int, default=2000, help="number of additional racks")
+    trainer.add_argument("--seed", type=int, default=0, help="random seed for a new training run")
+    trainer.add_argument("--checkpoint", type=Path, default=Path("ghost_q.npz"),
+                         help="save to this file and automatically resume if it exists")
+    trainer.add_argument("--save-every", type=positive_int, default=CHECKPOINT_INTERVAL,
+                         help="racks between checkpoints")
     trainer.set_defaults(run=train_command)
 
     replay = commands.add_parser("replay", help="play a saved policy with fresh noise")
@@ -313,7 +423,7 @@ def main() -> None:
         parser.error("--seed must be nonnegative")
     try:
         args.run(args)
-    except FileNotFoundError as error:
+    except (OSError, ValueError) as error:
         parser.error(str(error))
 
 

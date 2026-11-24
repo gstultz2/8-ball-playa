@@ -1,3 +1,7 @@
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -12,9 +16,11 @@ from ghost_rl import (
     QNetwork,
     Transition,
     bellman_target,
+    load_training_state,
     make_layout,
     play_episode,
     shot_options,
+    train,
 )
 from pool_rules import NineBallRules, Outcome
 
@@ -69,3 +75,33 @@ class GhostRLTests(TestCase):
         initial = network.values(features)[0]
         network.update(features, np.ones(1))
         self.assertGreater(network.values(features)[0], initial)
+
+    def test_checkpoint_resume_matches_uninterrupted_training(self) -> None:
+        with TemporaryDirectory() as directory, redirect_stdout(StringIO()):
+            path = Path(directory) / "policy.npz"
+            train("side-pocket", 40, 3, checkpoint=path, save_every=30)
+            saved = load_training_state(path, "side-pocket", 0)
+            self.assertEqual(saved.episodes, 40)
+            self.assertGreaterEqual(len(saved.experience), 32)
+
+            resumed = train(None, 30, 100, checkpoint=path, save_every=30)
+            uninterrupted = train("side-pocket", 70, 3)
+            for actual, expected in zip(resumed.weights, uninterrupted.weights, strict=True):
+                np.testing.assert_array_equal(actual, expected)
+            self.assertEqual(load_training_state(path, None, 0).episodes, 70)
+
+    def test_interrupted_training_keeps_the_last_completed_save(self) -> None:
+        def interrupt_after_ten_racks(layout, rng, choose):
+            nonlocal racks
+            racks += 1
+            if racks == 11:
+                raise KeyboardInterrupt
+            yield from play_episode(layout, rng, choose)
+
+        racks = 0
+        with TemporaryDirectory() as directory, redirect_stdout(StringIO()):
+            path = Path(directory) / "policy.npz"
+            with patch("ghost_rl.play_episode", side_effect=interrupt_after_ten_racks):
+                with self.assertRaises(KeyboardInterrupt):
+                    train("cross-table", 20, 3, checkpoint=path, save_every=8)
+            self.assertEqual(load_training_state(path, None, 0).episodes, 8)

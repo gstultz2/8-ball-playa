@@ -36,7 +36,15 @@ python ghost_rl.py train --layout side-pocket --episodes 2000 --checkpoint ghost
 python ghost_rl.py replay --checkpoint ghost_q.npz --trials 5 --visualize
 ```
 
-Choose `side-pocket`, `long-cut`, or `cross-table` to set up the cue ball and the 7, 8, and 9. Each checkpoint is trained on one starting layout. Training uses the existing Pooltool and NumPy installation. Pass `--seed` to vary or reproduce a training run or replay.
+Choose `side-pocket`, `long-cut`, or `cross-table` to set up the cue ball and the 7, 8, and 9. Each checkpoint is trained on one starting layout. Training uses the existing Pooltool and NumPy installation. Pass `--seed` to vary or reproduce a new training run or replay.
+
+For a long run in PowerShell, use the same checkpoint path each time. `--episodes` counts additional racks.
+
+```powershell
+.\.venv\Scripts\python.exe -u ghost_rl.py train --layout side-pocket --episodes 1000000 --save-every 500 --checkpoint ghost_q.npz 2>&1 | Tee-Object -FilePath ghost-training.log -Append
+```
+
+Training saves every 500 completed racks by default and at the end of the run. Rerunning `train` loads the saved network, experience, and random number generator state and continues from the last completed save. After an interruption, progress since that save is lost. Older policy files can resume from their saved weights and begin accumulating a new experience buffer. Use a different checkpoint path for a fresh run or for another layout.
 
 On each turn, the network chooses a pocket, aim, and center-ball speed from a grid built from the table geometry. After the choice, the simulator adds uniform aim error up to ±0.18° and speed error up to ±8%, then plays the shot. The network learns from the resulting layout and whether the rack ends in a win. Cut angle and shot distances are logged for replay.
 
