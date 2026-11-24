@@ -44,9 +44,13 @@ def main() -> None:
 
     printGameResults(game)
     if args.visualize:
+        from shot_viewer import RackShotViewer
+
         shots = pt.MultiSystem()
         shots.extend([played.table for played in game.shots])
-        pt.show(shots, title="N for next shot, P for previous, Esc to close")
+        RackShotViewer().show(
+            shots, title="Space to play/pause, R to reset, N/P to change shots, Esc to close"
+        )
 
 
 if __name__ == "__main__":

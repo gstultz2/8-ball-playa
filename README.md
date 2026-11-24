@@ -27,7 +27,20 @@ python main.py --game 9-ball --player discrete-make --visualize
 
 The defaults are `--game 9-ball` and `--player random`. The terminal shows the legal first-contact targets, aim angle in degrees, cue speed in meters per second (displayed as `power`), any ball and pocket call, what dropped, and the reason for the outcome. It prints the winner at the end.
 
-`--visualize` opens Pooltool's shot viewer after the rack finishes. Press `N` for the next shot, `P` for the previous shot, and `Esc` to close. Run `python main.py --help` to see the available options.
+`--visualize` opens Pooltool's shot viewer after the rack finishes. Each shot opens paused with a yellow line showing where the cue is aimed. Press `Space` to play or pause, `R` to return to the paused aiming view, `N` for the next shot, `P` for the previous shot, and `Esc` to close. Run `python main.py --help` to see the available options.
+
+## Train a three-ball Ghost player
+
+```sh
+python ghost_rl.py train --layout side-pocket --episodes 2000 --checkpoint ghost_q.npz
+python ghost_rl.py replay --checkpoint ghost_q.npz --trials 5 --visualize
+```
+
+Choose `side-pocket`, `long-cut`, or `cross-table` to set up the cue ball and the 7, 8, and 9. Each checkpoint is trained on one starting layout. Training uses the existing Pooltool and NumPy installation. Pass `--seed` to vary or reproduce a training run or replay.
+
+On each turn, the network chooses a pocket, aim, and center-ball speed from a grid built from the table geometry. After the choice, the simulator adds uniform aim error up to ±0.18° and speed error up to ±8%, then plays the shot. The network learns from the resulting layout and whether the rack ends in a win. Cut angle and shot distances are logged for replay.
+
+Replay starts from the saved layout each time and applies fresh shot noise. It prints the intended and executed shots, what dropped, and where the cue ball stopped. Use `--visualize` to step through the executed shots in the rack viewer.
 
 ## Game rules
 

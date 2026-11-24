@@ -67,6 +67,11 @@ def _play_shot(
 ) -> PlayedShot:
     turn = rules.prepare_turn(table, is_break=is_break)
     shot = player.take_turn(table, turn)
+    return play_shot(table, turn, shot, rules)
+
+
+def play_shot(table: pt.System, turn: Turn, shot: Shot, rules: GameRules) -> PlayedShot:
+    """Simulate the committed shot in place and judge its outcome."""
     shot.apply_to(table.cue)
     pt.simulate(table, inplace=True)
     pocketed = tuple(pt.ruleset.get_pocketed_ball_ids_during_shot(table))

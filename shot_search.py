@@ -131,6 +131,15 @@ def pocket_aim_margin(
     return max(0.0, min(aim - low, high - aim))
 
 
+def pocket_aim_options(
+    cue: pt.Ball, target: pt.Ball, pocket: Pocket, offsets: tuple[float, ...]
+) -> Iterator[tuple[float, float]]:
+    """Yield pocket offsets and direct-pot aims in degrees from table geometry."""
+    for offset, angle in zip(offsets, _pocket_aims(cue, target, pocket, offsets), strict=True):
+        if angle is not None:
+            yield offset, math.degrees(angle) % 360
+
+
 def _pocket_aims(
     cue: pt.Ball, target: pt.Ball, pocket: Pocket, offsets: tuple[float, ...] | None
 ) -> Iterator[float | None]:
