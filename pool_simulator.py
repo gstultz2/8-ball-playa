@@ -53,13 +53,7 @@ class GhostSimulator:
         while True:
             turn = rules.prepare_turn(system, is_break=not played_shots)
             shot = player.take_turn(system, turn)
-            system.cue.set_state(
-                V0=shot.power,
-                phi=shot.angle,
-                theta=shot.elevation,
-                a=shot.side_spin,
-                b=shot.vertical_spin,
-            )
+            shot.apply_to(system.cue)
             pt.simulate(system, inplace=True)
             pocketed = tuple(pt.ruleset.get_pocketed_ball_ids_during_shot(system))
             result = rules.judge_shot(system, turn, shot, pocketed)

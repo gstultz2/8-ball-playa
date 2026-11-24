@@ -26,6 +26,15 @@ class Shot:
     called_ball: str | None = None
     called_pocket: str | None = None
 
+    def apply_to(self, cue: pt.Cue) -> None:
+        cue.set_state(
+            V0=self.power,
+            phi=self.angle,
+            theta=self.elevation,
+            a=self.side_spin,
+            b=self.vertical_spin,
+        )
+
 
 class Player(Protocol):
     def take_turn(self, table: pt.System, turn: Turn) -> Shot:

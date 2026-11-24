@@ -2,13 +2,19 @@ import argparse
 
 import pooltool as pt
 
-from always_make import AlwaysMake
+from always_make import AlwaysMake, DiscreteMake
+from least_difficult import LeastDifficult
 from pool_simulator import GhostSimulator, GameResult
 from random_pool import RandomPlayer
 
 
 GAME_TYPES = {"8-ball": pt.GameType.EIGHTBALL, "9-ball": pt.GameType.NINEBALL}
-PLAYERS = {"random": RandomPlayer, "always-make": AlwaysMake}
+PLAYERS = {
+    "random": RandomPlayer,
+    "always-make": AlwaysMake,
+    "discrete-make": DiscreteMake,
+    "least-difficult": LeastDifficult,
+}
 
 def printGameResults(game: GameResult) -> None:
     print(f"{game.game_type} against the ghost")
