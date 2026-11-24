@@ -11,7 +11,7 @@ import pooltool as pt
 from pooltool.events import Event
 from pooltool.objects.table.components import Pocket
 
-from pool_player import Shot, Turn
+from pool_shot import Shot, Turn
 
 
 _CUSHION_EVENTS = (

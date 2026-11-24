@@ -3,9 +3,9 @@ from unittest.mock import patch
 
 import pooltool as pt
 
-from least_difficult import DifficultySettings, LeastDifficult
-from pool_player import Shot, Turn
+from pool_player import DifficultySettings, LeastDifficult
 from pool_rules import NineBallRules
+from pool_shot import Shot, Turn
 from shot_search import Pot, PotRoute, ShotGrid, grid_makes, simulate_make
 
 
@@ -33,7 +33,7 @@ class LeastDifficultTests(TestCase):
         makes = {pot for _, pots in grid_makes(table, turn, grid) for pot in pots}
         self.assertIn(Pot("2", "rc", PotRoute.CAROM), makes)
 
-        with patch("least_difficult.simulate_make", wraps=simulate_make) as replays:
+        with patch("pool_player.simulate_make", wraps=simulate_make) as replays:
             shot = LeastDifficult(grid).take_turn(table, turn)
 
         self.assertIn(Pot("1", "rc", PotRoute.DIRECT), simulate_make(table, turn, shot))
@@ -63,8 +63,8 @@ class LeastDifficultTests(TestCase):
 
         settings = DifficultySettings(finalist_count=2)
         with (
-            patch("least_difficult.grid_makes", return_value=nominal_makes),
-            patch("least_difficult.simulate_make", side_effect=replay) as replays,
+            patch("pool_player.grid_makes", return_value=nominal_makes),
+            patch("pool_player.simulate_make", side_effect=replay) as replays,
         ):
             self.assertEqual(LeastDifficult(settings=settings).take_turn(table, turn), combination)
         self.assertEqual(replays.call_count, 8)

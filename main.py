@@ -2,10 +2,8 @@ import argparse
 
 import pooltool as pt
 
-from always_make import AlwaysMake, DiscreteMake
-from least_difficult import LeastDifficult
+from pool_player import AlwaysMake, DiscreteMake, LeastDifficult, RandomPlayer
 from pool_simulator import GhostSimulator, GameResult
-from random_pool import RandomPlayer
 
 
 GAME_TYPES = {"8-ball": pt.GameType.EIGHTBALL, "9-ball": pt.GameType.NINEBALL}

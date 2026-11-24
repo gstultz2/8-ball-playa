@@ -4,8 +4,9 @@ from dataclasses import dataclass
 
 import pooltool as pt
 
-from pool_player import Player, Shot, Turn
+from pool_player import Player
 from pool_rules import EightBallRules, GameRules, NineBallRules, Outcome, ShotResult
+from pool_shot import Shot, Turn
 
 
 RULES_BY_GAME = {
@@ -51,16 +52,23 @@ class GhostSimulator:
 
         played_shots: list[PlayedShot] = []
         while True:
-            turn = rules.prepare_turn(system, is_break=not played_shots)
-            shot = player.take_turn(system, turn)
-            shot.apply_to(system.cue)
-            pt.simulate(system, inplace=True)
-            pocketed = tuple(pt.ruleset.get_pocketed_ball_ids_during_shot(system))
-            result = rules.judge_shot(system, turn, shot, pocketed)
-            played_shots.append(PlayedShot(turn, shot, pocketed, result, system))
+            played = _play_shot(system, player, rules, is_break=not played_shots)
+            played_shots.append(played)
 
-            if result.outcome is not Outcome.CONTINUE:
+            if played.result.outcome is not Outcome.CONTINUE:
                 return GameResult(self.game_type, tuple(played_shots))
 
             system = system.copy()
             system.reset_history()
+
+
+def _play_shot(
+    table: pt.System, player: Player, rules: GameRules, *, is_break: bool
+) -> PlayedShot:
+    turn = rules.prepare_turn(table, is_break=is_break)
+    shot = player.take_turn(table, turn)
+    shot.apply_to(table.cue)
+    pt.simulate(table, inplace=True)
+    pocketed = tuple(pt.ruleset.get_pocketed_ball_ids_during_shot(table))
+    result = rules.judge_shot(table, turn, shot, pocketed)
+    return PlayedShot(turn, shot, pocketed, result, table)

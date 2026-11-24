@@ -7,8 +7,10 @@ from typing import Protocol
 import pooltool as pt
 from pooltool.ruleset.eight_ball import BallGroup
 
-from nine_ball import check_nineball_foul, get_lowest_ball_on_table
-from pool_player import Shot, Turn
+from pool_shot import Shot, Turn
+
+
+_CUSHION_EVENTS = (pt.EventType.BALL_LINEAR_CUSHION, pt.EventType.BALL_CIRCULAR_CUSHION)
 
 
 class Outcome(Enum):
@@ -33,21 +35,64 @@ class GameRules(Protocol):
 
 class NineBallRules:
     def prepare_turn(self, table: pt.System, *, is_break: bool) -> Turn:
-        lowest = get_lowest_ball_on_table(table)
+        available = (
+            ball_id
+            for ball_id, ball in table.balls.items()
+            if ball_id != "cue" and ball.state.s in pt.constants.on_table
+        )
+        lowest = min(available, key=int, default=None)
         return Turn(is_break, (lowest,) if lowest is not None else ())
 
     def judge_shot(
         self, table: pt.System, turn: Turn, shot: Shot, pocketed: tuple[str, ...]
     ) -> ShotResult:
-        lowest = turn.hittable_balls[0]
-        foul, reasons = check_nineball_foul(table, lowest)
-        if foul:
-            return ShotResult(Outcome.GHOST_WINS, ", ".join(reasons))
+        fouls = _nine_ball_fouls(table, turn.hittable_balls[0])
+        if fouls:
+            return ShotResult(Outcome.GHOST_WINS, ", ".join(fouls))
         if "9" in pocketed:
             return ShotResult(Outcome.PLAYER_WINS, "Legally pocketed the 9-ball")
         if pocketed:
             return ShotResult(Outcome.CONTINUE, "Pocketed an object ball")
         return ShotResult(Outcome.GHOST_WINS, "Missed all object balls")
+
+
+def _nine_ball_fouls(table: pt.System, lowest_ball_id: str) -> list[str]:
+    reasons = []
+    if pt.ruleset.is_ball_pocketed(table, "cue"):
+        reasons.append("Cue ball scratch")
+
+    first_hit = pt.ruleset.get_id_of_first_ball_hit(table)
+    if first_hit is None:
+        reasons.append("No object ball contacted")
+        return reasons
+    if first_hit != lowest_ball_id:
+        reasons.append(f"Wrong first contact: {first_hit}, expected {lowest_ball_id}")
+
+    first_contact = next(
+        (
+            event.time
+            for event in table.events
+            if event.event_type == pt.EventType.BALL_BALL and "cue" in event.ids
+        ),
+        None,
+    )
+    if first_contact is not None and not _has_rail_or_pot_after_contact(table, first_contact):
+        reasons.append("No rail contact or object ball pocketed")
+    return reasons
+
+
+def _has_rail_or_pot_after_contact(table: pt.System, contact_time: float) -> bool:
+    rail_after = any(
+        event.event_type in _CUSHION_EVENTS and event.time > contact_time
+        for event in table.events
+    )
+    object_pocketed = any(
+        event.event_type == pt.EventType.BALL_POCKET
+        and event.time >= contact_time
+        and event.ids[0] != "cue"
+        for event in table.events
+    )
+    return rail_after or object_pocketed
 
 
 class EightBallRules:
@@ -77,16 +122,12 @@ class EightBallRules:
             return ShotResult(Outcome.GHOST_WINS, f"Wrong first contact: {first_hit}")
 
         if turn.is_break:
-            if "8" in pocketed:
-                return ShotResult(
-                    Outcome.PLAYER_WINS, "Pocketed the 8-ball on the break"
-                )
-            if pocketed:
-                return ShotResult(
-                    Outcome.CONTINUE, "Pocketed an object ball on the break"
-                )
-            return ShotResult(Outcome.GHOST_WINS, "Dry break")
+            return _judge_eight_ball_break(pocketed)
+        return self._judge_called_shot(table, turn, shot, pocketed)
 
+    def _judge_called_shot(
+        self, table: pt.System, turn: Turn, shot: Shot, pocketed: tuple[str, ...]
+    ) -> ShotResult:
         called_ball = shot.called_ball
         called_pocket = shot.called_pocket
         made_call = (
@@ -105,6 +146,16 @@ class EightBallRules:
 
         if self.group is BallGroup.UNDECIDED:
             self.group = (
-                BallGroup.SOLIDS if called_ball in BallGroup.SOLIDS.balls else BallGroup.STRIPES
+                BallGroup.SOLIDS
+                if called_ball in BallGroup.SOLIDS.balls
+                else BallGroup.STRIPES
             )
         return ShotResult(Outcome.CONTINUE, "Made the called shot")
+
+
+def _judge_eight_ball_break(pocketed: tuple[str, ...]) -> ShotResult:
+    if "8" in pocketed:
+        return ShotResult(Outcome.PLAYER_WINS, "Pocketed the 8-ball on the break")
+    if pocketed:
+        return ShotResult(Outcome.CONTINUE, "Pocketed an object ball on the break")
+    return ShotResult(Outcome.GHOST_WINS, "Dry break")
